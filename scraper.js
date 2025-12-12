@@ -32,8 +32,6 @@ class Scraper {
 
     // Return the list of cities
     async getCities() {
-        // We use a predefined list derived from https://www.utopiafiber.com/cities/
-        // to ensure reliability and avoid breakage if the site structure changes.
         console.log(`Loaded ${this.cities.length} cities/areas from configuration.`);
         return this.cities;
     }
@@ -52,7 +50,6 @@ class Scraper {
         do {
             try {
                 // Text Search is usually better for "Category in City"
-                // Endpoint: https://maps.googleapis.com/maps/api/place/textsearch/json
                 const url = `https://maps.googleapis.com/maps/api/place/textsearch/json`;
                 const params = {
                     query: `${category} in ${city}`,
@@ -75,30 +72,28 @@ class Scraper {
                 const places = response.data.results || [];
 
                 for (const place of places) {
-                    // Extract basic info
                     let business = {
                         'Business Name': place.name,
                         'Location': place.formatted_address,
                         'Phone Number': '',
                         'Website': '',
-                        'Email': '' // Google Places API rarely returns email directly
+                        'Email': ''
                     };
-
-                    // We might need Place Details for Phone and Website if not present (Text Search usually returns basic info)
-                    // Text Search returns formatted_address, name, place_id.
-                    // It does NOT guarantee phone number or website in the list result (depending on fields, but textsearch returns a subset).
-                    // Actually, textsearch returns a lot. Let's check if we need more details.
-                    // TextSearch results typically include `formatted_address`, `geometry`, `icon`, `id`, `name`, `photos`, `place_id`, `reference`, `types`.
-                    // Often `rating`, `user_ratings_total`.
-                    // It usually does NOT return website or phone number in the summary list. We need to fetch details.
 
                     if (place.place_id) {
                          const details = await this.getPlaceDetails(place.place_id);
                          if (details) {
                              business['Phone Number'] = details.formatted_phone_number || details.international_phone_number || '';
                              business['Website'] = details.website || '';
-                             // Email is not provided by Google Places API standard fields.
-                             // We leave it empty as per prompt "if available".
+
+                             // If website exists, try to scrape email
+                             if (business['Website']) {
+                                 // Add a small delay to be polite and avoid overwhelming network
+                                 const email = await this.scrapeEmailFromWebsite(business['Website']);
+                                 if (email) {
+                                     business['Email'] = email;
+                                 }
+                             }
                          }
                     }
 
@@ -133,6 +128,46 @@ class Scraper {
         } catch (error) {
             console.error(`Error fetching details for place_id ${placeId}:`, error.message);
             return null;
+        }
+    }
+
+    async scrapeEmailFromWebsite(websiteUrl) {
+        try {
+            // console.log(`Scraping email from ${websiteUrl}...`); // Optional log
+            const response = await axios.get(websiteUrl, {
+                timeout: 10000, // 10 seconds timeout
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+            });
+
+            const html = response.data;
+            // Regex to find email addresses. This is a common pattern.
+            // It searches for strings that look like emails.
+            const emailRegex = /[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+/gi;
+
+            const matches = html.match(emailRegex);
+            if (matches && matches.length > 0) {
+                // Return the first unique valid-looking email
+                // Filter out some common false positives like "rating@2x.png" if necessary,
+                // though the regex requires @ and .
+
+                // Deduplicate
+                const uniqueEmails = [...new Set(matches.map(e => e.toLowerCase()))];
+
+                // Filter out image extensions just in case (e.g. image@2x.png matches if not careful)
+                const validEmails = uniqueEmails.filter(email => {
+                    const invalidExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.js', '.css'];
+                    return !invalidExtensions.some(ext => email.endsWith(ext));
+                });
+
+                return validEmails.length > 0 ? validEmails[0] : '';
+            }
+            return '';
+        } catch (error) {
+            // It's common for scraping to fail (timeout, 403, etc). Just return empty.
+            // console.error(`Failed to scrape email from ${websiteUrl}: ${error.message}`);
+            return '';
         }
     }
 }
