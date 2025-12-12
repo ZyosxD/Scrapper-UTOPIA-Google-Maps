@@ -1,11 +1,10 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// const CITIES_URL = 'https://www.utopiafiber.com/cities/'; // Keeping URL for reference but not scraping dynamically for stability.
-
 class Scraper {
-    constructor(apiKey) {
+    constructor(apiKey, colors = {}) {
         this.apiKey = apiKey;
+        this.colors = colors;
         this.cities = [
             "Brigham City, UT",
             "Cedar Hills, UT",
@@ -30,26 +29,38 @@ class Scraper {
         ];
     }
 
+    // Helper for coloring logs
+    log(msg, colorCode = "") {
+        const reset = this.colors.reset || "";
+        console.log((colorCode || "") + msg + reset);
+    }
+
+    error(msg) {
+        const color = this.colors.fg?.red || "";
+        const reset = this.colors.reset || "";
+        console.error(color + msg + reset);
+    }
+
     // Return the list of cities
     async getCities() {
-        console.log(`Loaded ${this.cities.length} cities/areas from configuration.`);
+        this.log(` 🗺️  Loaded ${this.cities.length} cities/areas from configuration.`, this.colors.fg?.blue);
         return this.cities;
     }
 
     async findBusinesses(city, category) {
         if (!this.apiKey) {
-            console.error("API Key is missing. Cannot search Google Places.");
+            this.error(" ❌  API Key is missing. Cannot search Google Places.");
             return [];
         }
 
         const results = [];
         let nextPageToken = null;
 
-        console.log(`Searching for "${category}" in ${city}...`);
+        process.stdout.write((this.colors.fg?.yellow || "") + ` 🔎  Searching in ${city}... ` + (this.colors.reset || ""));
 
         do {
             try {
-                // Text Search is usually better for "Category in City"
+                // Text Search
                 const url = `https://maps.googleapis.com/maps/api/place/textsearch/json`;
                 const params = {
                     query: `${category} in ${city}`,
@@ -65,11 +76,17 @@ class Scraper {
                 const response = await axios.get(url, { params });
 
                 if (response.data.status !== 'OK' && response.data.status !== 'ZERO_RESULTS') {
-                    console.error(`API Error for ${city}: ${response.data.status} - ${response.data.error_message || ''}`);
+                    console.log(""); // New line
+                    this.error(`API Error for ${city}: ${response.data.status} - ${response.data.error_message || ''}`);
                     break;
                 }
 
                 const places = response.data.results || [];
+
+                // If this is the first page and no results, log it.
+                if (places.length === 0 && !nextPageToken) {
+                     // Keep silence or log zero?
+                }
 
                 for (const place of places) {
                     let business = {
@@ -88,7 +105,6 @@ class Scraper {
 
                              // If website exists, try to scrape email
                              if (business['Website']) {
-                                 // Add a small delay to be polite and avoid overwhelming network
                                  const email = await this.scrapeEmailFromWebsite(business['Website']);
                                  if (email) {
                                      business['Email'] = email;
@@ -103,12 +119,18 @@ class Scraper {
                 nextPageToken = response.data.next_page_token;
 
             } catch (error) {
-                console.error(`Error searching in ${city}:`, error.message);
+                console.log(""); // New line
+                this.error(`Error searching in ${city}: ${error.message}`);
                 break;
             }
         } while (nextPageToken);
 
-        console.log(`Found ${results.length} businesses in ${city}.`);
+        if (results.length > 0) {
+             console.log((this.colors.fg?.green || "") + `Found ${results.length} businesses. 🎯` + (this.colors.reset || ""));
+        } else {
+             console.log((this.colors.fg?.gray || "") + `No matches found.` + (this.colors.reset || ""));
+        }
+
         return results;
     }
 
@@ -126,47 +148,34 @@ class Scraper {
             }
             return null;
         } catch (error) {
-            console.error(`Error fetching details for place_id ${placeId}:`, error.message);
+            // this.error(`Error fetching details for place_id ${placeId}: ${error.message}`);
             return null;
         }
     }
 
     async scrapeEmailFromWebsite(websiteUrl) {
         try {
-            // console.log(`Scraping email from ${websiteUrl}...`); // Optional log
             const response = await axios.get(websiteUrl, {
-                timeout: 10000, // 10 seconds timeout
+                timeout: 5000, // Reduced timeout for speed
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 }
             });
 
             const html = response.data;
-            // Regex to find email addresses. This is a common pattern.
-            // It searches for strings that look like emails.
             const emailRegex = /[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+/gi;
 
             const matches = html.match(emailRegex);
             if (matches && matches.length > 0) {
-                // Return the first unique valid-looking email
-                // Filter out some common false positives like "rating@2x.png" if necessary,
-                // though the regex requires @ and .
-
-                // Deduplicate
                 const uniqueEmails = [...new Set(matches.map(e => e.toLowerCase()))];
-
-                // Filter out image extensions just in case (e.g. image@2x.png matches if not careful)
                 const validEmails = uniqueEmails.filter(email => {
-                    const invalidExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.js', '.css'];
+                    const invalidExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.js', '.css', '.wav', '.mp3'];
                     return !invalidExtensions.some(ext => email.endsWith(ext));
                 });
-
                 return validEmails.length > 0 ? validEmails[0] : '';
             }
             return '';
         } catch (error) {
-            // It's common for scraping to fail (timeout, 403, etc). Just return empty.
-            // console.error(`Failed to scrape email from ${websiteUrl}: ${error.message}`);
             return '';
         }
     }
